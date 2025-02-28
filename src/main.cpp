@@ -24,110 +24,123 @@ unsigned long relayDurations[4] = {0, 0, 0, 0};
 uint8_t downlinkBuffer[256];
 // Time tracking for downlink polling
 unsigned long lastDownlinkCheck = 0;
-const unsigned long DOWNLINK_CHECK_INTERVAL = 30000; // Check every 30 seconds
+const unsigned long DOWNLINK_CHECK_INTERVAL = 100;
 
 // Function to handle downlink messages
 void processDownlinkMessage(uint8_t* payload, uint8_t size) {
-  if (size < 1) {
-    return; // Message too short
-  }
-  
-  Serial.print("Received downlink: ");
-  for (int i = 0; i < size; i++) {
+  // Print received data for debugging
+  Serial.print("Received downlink raw data: ");
+  for (int i = 0; i < size && i < 20; i++) { // Print first 20 bytes maximum
     Serial.print(payload[i], HEX);
     Serial.print(" ");
   }
+  if (size > 20) {
+    Serial.print("... (total ");
+    Serial.print(size);
+    Serial.print(" bytes)");
+  }
   Serial.println();
   
-  // Command format:
-  // Byte 0: Command type
-  //   0x01: Direct relay control
-  //   0x02: Timed relay operation
-  //
-  // For command 0x01 (Direct control):
-  //   Byte 1: Relay bitmap (bit 0 = relay1, bit 1 = relay2, etc.)
-  //   Byte 2: State (0 = OFF, 1 = ON, 2 = TOGGLE)
-  //
-  // For command 0x02 (Timed operation):
-  //   Byte 1: Relay number (0-3)
-  //   Byte 2-3: Duration in seconds (LSB first)
-  //   Byte 4: Action (0 = OFF after duration, 1 = ON after duration, 2 = ON then OFF after duration)
+  // Check if we have at least one byte for the command
+  if (size < 1) {
+    Serial.println("Downlink too short, ignoring.");
+    return;
+  }
   
+  // Extract command type
   uint8_t command = payload[0];
   
-  switch (command) {
-    case 0x01: // Direct relay control
-      if (size >= 3) {
-        uint8_t relayBitmap = payload[1];
-        uint8_t state = payload[2];
-        
-        for (uint8_t i = 0; i < NUM_RELAYS; i++) {
-          if (relayBitmap & (1 << i)) {
-            switch (state) {
-              case 0:
-                relays[i]->off();
-                relayTimers[i] = 0; // Cancel any timers
-                Serial.print("Relay ");
-                Serial.print(i + 1);
-                Serial.println(" OFF");
-                break;
-              case 1:
-                relays[i]->on();
-                relayTimers[i] = 0; // Cancel any timers
-                Serial.print("Relay ");
-                Serial.print(i + 1);
-                Serial.println(" ON");
-                break;
-              case 2:
-                relays[i]->toggle();
-                relayTimers[i] = 0; // Cancel any timers
-                Serial.print("Relay ");
-                Serial.print(i + 1);
-                Serial.print(" TOGGLED to ");
-                Serial.println(relays[i]->getState() ? "ON" : "OFF");
-                break;
-            }
-          }
+  // Process command based on type
+  if (command == 0x01) { // Direct relay control
+    // Check if we have enough bytes for this command
+    if (size < 3) {
+      Serial.println("Direct control command incomplete");
+      return;
+    }
+    
+    uint8_t relayBitmap = payload[1];
+    uint8_t state = payload[2];
+    
+    Serial.print("Direct control command: relays=");
+    Serial.print(relayBitmap, BIN);
+    Serial.print(", state=");
+    Serial.println(state);
+    
+    // Process for each relay
+    for (uint8_t i = 0; i < NUM_RELAYS; i++) {
+      if (relayBitmap & (1 << i)) {
+        if (state == 0) {
+          relays[i]->off();
+          relayTimers[i] = 0; // Cancel any timers
+          Serial.print("Relay ");
+          Serial.print(i + 1);
+          Serial.println(" OFF");
+        } 
+        else if (state == 1) {
+          relays[i]->on();
+          relayTimers[i] = 0; // Cancel any timers
+          Serial.print("Relay ");
+          Serial.print(i + 1);
+          Serial.println(" ON");
+        }
+        else if (state == 2) {
+          relays[i]->toggle();
+          relayTimers[i] = 0; // Cancel any timers
+          Serial.print("Relay ");
+          Serial.print(i + 1);
+          Serial.print(" TOGGLED to ");
+          Serial.println(relays[i]->getState() ? "ON" : "OFF");
         }
       }
-      break;
-      
-    case 0x02: // Timed relay operation
-      if (size >= 5) {
-        uint8_t relayNum = payload[1];
-        if (relayNum < NUM_RELAYS) {
-          // Duration in seconds (LSB first)
-          unsigned long duration = ((unsigned long)payload[3] << 8) | payload[2];
-          uint8_t action = payload[4];
-          
-          // Convert seconds to milliseconds
-          relayDurations[relayNum] = duration * 1000;
-          relayTimers[relayNum] = millis();
-          
-          Serial.print("Timed operation for Relay ");
-          Serial.print(relayNum + 1);
-          Serial.print(", Duration: ");
-          Serial.print(duration);
-          Serial.print("s, Action: ");
-          
-          switch (action) {
-            case 0: // OFF after duration
-              Serial.println("OFF after timeout");
-              break;
-            case 1: // ON after duration
-              Serial.println("ON after timeout");
-              break;
-            case 2: // ON then OFF after duration
-              relays[relayNum]->on();
-              Serial.println("ON now, OFF after timeout");
-              break;
-          }
-          
-          // Store the action in the high byte of relayDurations for later reference
-          relayDurations[relayNum] |= ((unsigned long)action << 24);
-        }
-      }
-      break;
+    }
+  }
+  else if (command == 0x02) { // Timed relay operation
+    // Check if we have enough bytes for this command
+    if (size < 5) {
+      Serial.println("Timed operation command incomplete");
+      return;
+    }
+    
+    uint8_t relayNum = payload[1];
+    
+    // Check relay number is valid
+    if (relayNum >= NUM_RELAYS) {
+      Serial.print("Invalid relay number: ");
+      Serial.println(relayNum);
+      return;
+    }
+    
+    // Duration in seconds (LSB first)
+    unsigned long duration = ((unsigned long)payload[3] << 8) | payload[2];
+    uint8_t action = payload[4];
+    
+    // Convert seconds to milliseconds
+    relayDurations[relayNum] = duration * 1000;
+    relayTimers[relayNum] = millis();
+    
+    Serial.print("Timed operation for Relay ");
+    Serial.print(relayNum + 1);
+    Serial.print(", Duration: ");
+    Serial.print(duration);
+    Serial.print("s, Action: ");
+    
+    if (action == 0) {
+      Serial.println("OFF after timeout");
+    }
+    else if (action == 1) {
+      Serial.println("ON after timeout");
+    }
+    else if (action == 2) {
+      relays[relayNum]->on();
+      Serial.println("ON now, OFF after timeout");
+    }
+    
+    // Store the action in the high byte of relayDurations for later reference
+    relayDurations[relayNum] |= ((unsigned long)action << 24);
+  }
+  else {
+    Serial.print("Unknown command type: 0x");
+    Serial.println(command, HEX);
   }
 }
 
@@ -160,8 +173,54 @@ void loop() {
     uint8_t port = 0;
     
     if (lorawan.receiveDownlink(downlinkBuffer, &length, &port)) {
-      Serial.println("Downlink received!");
-      processDownlinkMessage(downlinkBuffer, length);
+      Serial.println("==========================================");
+      Serial.print("Downlink received on port: ");
+      Serial.print(port);
+      Serial.print(", length: ");
+      Serial.println(length);
+      
+      // Print the full received payload in HEX
+      Serial.print("Full payload: ");
+      for (size_t i = 0; i < length && i < 16; i++) {  // Print first 16 bytes
+        Serial.print(downlinkBuffer[i], HEX);
+        Serial.print(" ");
+      }
+      if (length > 16) Serial.print("...");  // Indicate truncation
+      Serial.println();
+      
+      // Handle TTN's padded downlink format by determining the actual command length
+      uint8_t actualSize = 0;
+      
+      // Extract the command type and determine the expected message length
+      if (length > 0) {
+        uint8_t cmdType = downlinkBuffer[0];
+        Serial.print("Command type: 0x");
+        Serial.println(cmdType, HEX);
+        
+        if (cmdType == 0x01 && length >= 3) {
+          // Direct relay control command (Command, Bitmap, State)
+          actualSize = 3;
+          Serial.print("Direct control command. Relay bitmap: 0x");
+          Serial.print(downlinkBuffer[1], HEX);
+          Serial.print(", State: ");
+          Serial.println(downlinkBuffer[2]);
+        } else if (cmdType == 0x02 && length >= 5) {
+          // Timed relay operation (Command, Relay, Duration LSB, Duration MSB, Action)
+          actualSize = 5;
+          Serial.println("Timed relay operation command");
+        } else {
+          // Unknown command or incomplete payload
+          actualSize = length > 10 ? 10 : length; // Limit to first 10 bytes for safety
+          Serial.println("Unknown or incomplete command");
+        }
+        
+        Serial.print("Processing command with actual size: ");
+        Serial.println(actualSize);
+        
+        // Process only the meaningful part of the downlink payload
+        processDownlinkMessage(downlinkBuffer, actualSize);
+      }
+      Serial.println("==========================================");
     }
     
     lastDownlinkCheck = currentTime;
