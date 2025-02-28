@@ -5,3 +5,4 @@
 .vscode/ipch
 src/secrets.h
 .git.bak
+.DS_Store
