@@ -20,8 +20,16 @@ void Relay::off() {
   state = false;
 }
 
-void Relay::toggle() {
-  state ? off() : on();
+void Relay::toggle(int duration) {
+  if (state) {
+    off();
+    delay(duration * 1000);  // Convert seconds to milliseconds
+    on();
+  } else {
+    on();
+    delay(duration * 1000);  // Convert seconds to milliseconds
+    off();
+  }
 }
 
 bool Relay::getState() {

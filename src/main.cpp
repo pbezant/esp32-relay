@@ -1,3 +1,35 @@
+//Downlink command format:
+//Byte 0: Command type
+//   0x01: Direct relay control
+//   0x02: Timed relay operation
+//
+//For command 0x01 (Direct control):  
+//Byte 1: Relay bitmap (bit 0 = relay1, bit 1 = relay2, etc.)
+//Byte 2: State (0 = OFF, 1 = ON, 2 = TOGGLE)
+//
+//For command 0x02 (Timed operation):
+//Byte 1: Relay number (0-3)
+//Byte 2-3: Duration in seconds (LSB first)
+//Byte 4: Action (0 = OFF after duration, 1 = ON after duration, 2 = ON then OFF after duration)
+//Turn off all relays:
+// 01 FF 00
+//Turn on all relays:
+// 01 FF 01
+//Toggle all relays:
+// 01 FF 02 
+//Turn off relay 1:
+// 01 01 00
+//Turn on relay 1:
+// 01 01 01
+//Toggle relay 1:
+// 01 01 02
+//Turn off relay 1 after 10 seconds:
+// 02 01 00 0A 00
+//Turn on relay 1 after 10 seconds:
+// 02 01 01 0A 00
+//Turn on relay 1 after 10 seconds, then off after 20 seconds:
+// 02 01 02 0A 00 14 00
+
 #include <Arduino.h>
 #include "Relay.h"
 #include "LoRaWANManager.h"
@@ -250,9 +282,7 @@ void loop() {
             Serial.println(i + 1);
             break;
           case 2: // ON then OFF after duration
-            relays[i]->on();
-            delay(relayTimers[i]);
-            relays[i]->off();
+            relays[i]->toggle(relayTimers[i]);
             Serial.print("Timed OFF for Relay ");
             Serial.println(i + 1);
             break;

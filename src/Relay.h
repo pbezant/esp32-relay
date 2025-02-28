@@ -14,7 +14,7 @@ class Relay {
     
     void on();
     void off();
-    void toggle();
+    void toggle(int duration = 5); // Default duration is 5 seconds
     bool getState();
 };
 
