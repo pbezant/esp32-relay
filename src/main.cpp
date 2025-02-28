@@ -11,10 +11,15 @@ Relay relay1(36);
 Relay relay2(35);
 Relay relay3(34);
 Relay relay4(33);
+Relay relay5(47);
+Relay relay6(48);
+Relay relay7(26);
+Relay relay8(21);
+
 
 // Array of relay pointers for easier access
-Relay* relays[] = {&relay1, &relay2, &relay3, &relay4};
-const uint8_t NUM_RELAYS = 4;
+Relay* relays[] = {&relay1, &relay2, &relay3, &relay4, &relay5, &relay6, &relay7, &relay8};
+const uint8_t NUM_RELAYS = 8;
 
 // Timer variables for timed relay operation
 unsigned long relayTimers[4] = {0, 0, 0, 0};
@@ -245,6 +250,8 @@ void loop() {
             Serial.println(i + 1);
             break;
           case 2: // ON then OFF after duration
+            relays[i]->on();
+            delay(relayTimers[i]);
             relays[i]->off();
             Serial.print("Timed OFF for Relay ");
             Serial.println(i + 1);
