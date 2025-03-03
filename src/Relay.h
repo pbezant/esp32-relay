@@ -10,7 +10,7 @@ class Relay {
     bool activeHigh;  // true if relay is activated by HIGH signal, false for LOW
     
   public:
-    Relay(int relayPin, bool isActiveHigh = true);
+    Relay(int relayPin, bool isActiveHigh = false);
     
     void on();
     void off();

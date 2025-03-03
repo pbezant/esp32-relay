@@ -21,7 +21,11 @@ void Relay::off() {
 }
 
 void Relay::toggle() {
-  state ? off() : on();
+  if (state) {
+    off();
+  } else {
+    on();
+  }
 }
 
 bool Relay::getState() {
