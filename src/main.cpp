@@ -1,34 +1,27 @@
 //Downlink command format:
 //Byte 0: Command type
-//   0x01: Direct relay control
-//   0x02: Timed relay operation
+//   0x01: Turn relay(s) ON
+//   0x02: Turn relay(s) OFF
+//   0x03: Toggle relay(s) for duration
 //
-//For command 0x01 (Direct control):  
+//For commands 0x01 and 0x02:
 //Byte 1: Relay bitmap (bit 0 = relay1, bit 1 = relay2, etc.)
-//Byte 2: State (0 = OFF, 1 = ON, 2 = TOGGLE)
 //
-//For command 0x02 (Timed operation):
-//Byte 1: Relay number (0-3)
+//For command 0x03 (Toggle for duration):
+//Byte 1: Relay bitmap (bit 0 = relay1, bit 1 = relay2, etc.)
 //Byte 2-3: Duration in seconds (LSB first)
-//Byte 4: Action (0 = OFF after duration, 1 = ON after duration, 2 = ON then OFF after duration)
-//Turn off all relays:
-// 01 FF 00
+//
+//Examples:
 //Turn on all relays:
-// 01 FF 01
-//Toggle all relays:
-// 01 FF 02 
-//Turn off relay 1:
-// 01 01 00
+// 01 FF
+//Turn off all relays:
+// 02 FF
 //Turn on relay 1:
-// 01 01 01
-//Toggle relay 1:
-// 01 01 02
-//Turn off relay 1 after 10 seconds:
-// 02 01 00 0A 00
-//Turn on relay 1 after 10 seconds:
-// 02 01 01 0A 00
-//Turn on relay 1 after 10 seconds, then off after 20 seconds:
-// 02 01 02 0A 00 14 00
+// 01 01
+//Turn off relay 4:
+// 02 08
+//Toggle relay 4 for 4 seconds:
+// 03 08 04 00
 
 #include <Arduino.h>
 #include "Relay.h"
@@ -48,14 +41,18 @@ Relay relay6(48);
 Relay relay7(26);
 Relay relay8(21);
 
-
 // Array of relay pointers for easier access
 Relay* relays[] = {&relay1, &relay2, &relay3, &relay4, &relay5, &relay6, &relay7, &relay8};
 const uint8_t NUM_RELAYS = 8;
 
 // Timer variables for timed relay operation
-unsigned long relayTimers[4] = {0, 0, 0, 0};
-unsigned long relayDurations[4] = {0, 0, 0, 0};
+struct RelayTimer {
+  unsigned long startTime = 0;
+  unsigned long duration = 0;
+  bool active = false;
+};
+
+RelayTimer relayTimers[NUM_RELAYS];
 
 // Buffer for downlink messages
 uint8_t downlinkBuffer[256];
@@ -88,92 +85,89 @@ void processDownlinkMessage(uint8_t* payload, uint8_t size) {
   uint8_t command = payload[0];
   
   // Process command based on type
-  if (command == 0x01) { // Direct relay control
+  if (command == 0x01) { // Turn relay(s) ON
     // Check if we have enough bytes for this command
-    if (size < 3) {
-      Serial.println("Direct control command incomplete");
+    if (size < 2) {
+      Serial.println("ON command incomplete");
       return;
     }
     
     uint8_t relayBitmap = payload[1];
-    uint8_t state = payload[2];
     
-    Serial.print("Direct control command: relays=");
-    Serial.print(relayBitmap, BIN);
-    Serial.print(", state=");
-    Serial.println(state);
+    Serial.print("Turn ON command: relays=");
+    Serial.println(relayBitmap, BIN);
     
     // Process for each relay
     for (uint8_t i = 0; i < NUM_RELAYS; i++) {
       if (relayBitmap & (1 << i)) {
-        if (state == 0) {
-          relays[i]->off();
-          relayTimers[i] = 0; // Cancel any timers
-          Serial.print("Relay ");
-          Serial.print(i + 1);
-          Serial.println(" OFF");
-        } 
-        else if (state == 1) {
-          relays[i]->on();
-          relayTimers[i] = 0; // Cancel any timers
-          Serial.print("Relay ");
-          Serial.print(i + 1);
-          Serial.println(" ON");
-        }
-        else if (state == 2) {
-          relays[i]->toggle();
-          relayTimers[i] = 0; // Cancel any timers
-          Serial.print("Relay ");
-          Serial.print(i + 1);
-          Serial.print(" TOGGLED to ");
-          Serial.println(relays[i]->getState() ? "ON" : "OFF");
-        }
+        relays[i]->on();
+        relayTimers[i].active = false; // Cancel any timers
+        Serial.print("Relay ");
+        Serial.print(i + 1);
+        Serial.println(" ON");
       }
     }
   }
-  else if (command == 0x02) { // Timed relay operation
+  else if (command == 0x02) { // Turn relay(s) OFF
     // Check if we have enough bytes for this command
-    if (size < 5) {
-      Serial.println("Timed operation command incomplete");
+    if (size < 2) {
+      Serial.println("OFF command incomplete");
       return;
     }
     
-    uint8_t relayNum = payload[1];
+    uint8_t relayBitmap = payload[1];
     
-    // Check relay number is valid
-    if (relayNum >= NUM_RELAYS) {
-      Serial.print("Invalid relay number: ");
-      Serial.println(relayNum);
+    Serial.print("Turn OFF command: relays=");
+    Serial.println(relayBitmap, BIN);
+    
+    // Process for each relay
+    for (uint8_t i = 0; i < NUM_RELAYS; i++) {
+      if (relayBitmap & (1 << i)) {
+        relays[i]->off();
+        relayTimers[i].active = false; // Cancel any timers
+        Serial.print("Relay ");
+        Serial.print(i + 1);
+        Serial.println(" OFF");
+      }
+    }
+  }
+  else if (command == 0x03) { // Toggle relay(s) for duration
+    // Check if we have enough bytes for this command
+    if (size < 4) {
+      Serial.println("Toggle for duration command incomplete");
       return;
     }
     
+    uint8_t relayBitmap = payload[1];
     // Duration in seconds (LSB first)
     unsigned long duration = ((unsigned long)payload[3] << 8) | payload[2];
-    uint8_t action = payload[4];
     
-    // Convert seconds to milliseconds
-    relayDurations[relayNum] = duration * 1000;
-    relayTimers[relayNum] = millis();
-    
-    Serial.print("Timed operation for Relay ");
-    Serial.print(relayNum + 1);
-    Serial.print(", Duration: ");
+    Serial.print("Toggle for duration command: relays=");
+    Serial.print(relayBitmap, BIN);
+    Serial.print(", duration=");
     Serial.print(duration);
-    Serial.print("s, Action: ");
+    Serial.println(" seconds");
     
-    if (action == 0) {
-      Serial.println("OFF after timeout");
+    // Process for each relay
+    for (uint8_t i = 0; i < NUM_RELAYS; i++) {
+      if (relayBitmap & (1 << i)) {
+        // Toggle the relay
+        relays[i]->toggle();
+        
+        // Set up timer
+        relayTimers[i].startTime = millis();
+        relayTimers[i].duration = duration * 1000; // Convert to milliseconds
+        relayTimers[i].active = true;
+        
+        Serial.print("Relay ");
+        Serial.print(i + 1);
+        Serial.print(" toggled to ");
+        Serial.print(relays[i]->getState() ? "ON" : "OFF");
+        Serial.print(" for ");
+        Serial.print(duration);
+        Serial.println(" seconds");
+      }
     }
-    else if (action == 1) {
-      Serial.println("ON after timeout");
-    }
-    else if (action == 2) {
-      relays[relayNum]->on();
-      Serial.println("ON now, OFF after timeout");
-    }
-    
-    // Store the action in the high byte of relayDurations for later reference
-    relayDurations[relayNum] |= ((unsigned long)action << 24);
   }
   else {
     Serial.print("Unknown command type: 0x");
@@ -234,17 +228,15 @@ void loop() {
         Serial.print("Command type: 0x");
         Serial.println(cmdType, HEX);
         
-        if (cmdType == 0x01 && length >= 3) {
-          // Direct relay control command (Command, Bitmap, State)
-          actualSize = 3;
-          Serial.print("Direct control command. Relay bitmap: 0x");
-          Serial.print(downlinkBuffer[1], HEX);
-          Serial.print(", State: ");
-          Serial.println(downlinkBuffer[2]);
-        } else if (cmdType == 0x02 && length >= 5) {
-          // Timed relay operation (Command, Relay, Duration LSB, Duration MSB, Action)
-          actualSize = 5;
-          Serial.println("Timed relay operation command");
+        if ((cmdType == 0x01 || cmdType == 0x02) && length >= 2) {
+          // ON/OFF command (Command, Bitmap)
+          actualSize = 2;
+          Serial.print("Relay control command. Relay bitmap: 0x");
+          Serial.println(downlinkBuffer[1], HEX);
+        } else if (cmdType == 0x03 && length >= 4) {
+          // Toggle for duration (Command, Bitmap, Duration LSB, Duration MSB)
+          actualSize = 4;
+          Serial.println("Toggle for duration command");
         } else {
           // Unknown command or incomplete payload
           actualSize = length > 10 ? 10 : length; // Limit to first 10 bytes for safety
@@ -265,31 +257,17 @@ void loop() {
   
   // Check timers for timed relay operations
   for (uint8_t i = 0; i < NUM_RELAYS; i++) {
-    if (relayTimers[i] > 0) {
-      if (currentTime - relayTimers[i] >= (relayDurations[i] & 0x00FFFFFF)) {
-        // Timer expired
-        uint8_t action = (relayDurations[i] >> 24) & 0xFF;
-        
-        switch (action) {
-          case 0: // OFF after duration
-            relays[i]->off();
-            Serial.print("Timed OFF for Relay ");
-            Serial.println(i + 1);
-            break;
-          case 1: // ON after duration
-            relays[i]->on();
-            Serial.print("Timed ON for Relay ");
-            Serial.println(i + 1);
-            break;
-          case 2: // ON then OFF after duration
-            relays[i]->toggle(relayTimers[i]);
-            Serial.print("Timed OFF for Relay ");
-            Serial.println(i + 1);
-            break;
-        }
+    if (relayTimers[i].active) {
+      if (currentTime - relayTimers[i].startTime >= relayTimers[i].duration) {
+        // Timer expired - toggle the relay back
+        relays[i]->toggle();
+        Serial.print("Timer expired: Relay ");
+        Serial.print(i + 1);
+        Serial.print(" toggled back to ");
+        Serial.println(relays[i]->getState() ? "ON" : "OFF");
         
         // Reset timer
-        relayTimers[i] = 0;
+        relayTimers[i].active = false;
       }
     }
   }
