@@ -70,7 +70,7 @@ RelayTimer relayTimers[NUM_RELAYS];
 uint8_t downlinkBuffer[256];
 // Time tracking for downlink polling
 unsigned long lastDownlinkCheck = 0;
-const unsigned long DOWNLINK_CHECK_INTERVAL = 100;
+const unsigned long DOWNLINK_CHECK_INTERVAL = 1;
 
 // Replace the command deduplication variables
 struct CommandDedupeInfo {
