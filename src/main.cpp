@@ -22,6 +22,16 @@
 // 02 08
 //Toggle relay 4 for 4 seconds:
 // 03 08 04 00
+// Current relay configuration:
+// Relay 1: 03 01 05 00 (Toggle relay 1 for 5 seconds)
+// Relay 2: 03 02 05 00 (Toggle relay 2 for 5 seconds)
+// Relay 3: 03 04 05 00 (Toggle relay 3 for 5 seconds)
+// Relay 4: 03 08 05 00 (Toggle relay 4 for 5 seconds)
+// Relay 5: 03 10 05 00 (Toggle relay 5 for 5 seconds)
+// Relay 6: 03 20 05 00 (Toggle relay 6 for 5 seconds)
+// Relay 7: 03 40 05 00 (Toggle relay 7 for 5 seconds)
+// Relay 8: 03 80 05 00 (Toggle relay 8 for 5 seconds)
+
 
 #include <Arduino.h>
 #include "Relay.h"
@@ -49,7 +59,9 @@ const uint8_t NUM_RELAYS = 8;
 struct RelayTimer {
   unsigned long startTime = 0;
   unsigned long duration = 0;
+  unsigned long lastPrintTime = 0;  // Track last print time per relay
   bool active = false;
+  bool initialState = false;  // Store the initial state to know what to return to
 };
 
 RelayTimer relayTimers[NUM_RELAYS];
@@ -60,7 +72,15 @@ uint8_t downlinkBuffer[256];
 unsigned long lastDownlinkCheck = 0;
 const unsigned long DOWNLINK_CHECK_INTERVAL = 100;
 
-// Function to handle downlink messages
+// Replace the command deduplication variables
+struct CommandDedupeInfo {
+  uint32_t commandHash;
+  unsigned long lastReceivedTime;
+};
+
+const unsigned long DEDUPE_WINDOW_MS = 30000; // 30 second dedupe window
+CommandDedupeInfo lastCommand = {0, 0};
+
 void processDownlinkMessage(uint8_t* payload, uint8_t size) {
   // Print received data for debugging
   Serial.print("Received downlink raw data: ");
@@ -80,6 +100,35 @@ void processDownlinkMessage(uint8_t* payload, uint8_t size) {
     Serial.println("Downlink too short, ignoring.");
     return;
   }
+  
+  // Calculate a hash of the command for deduplication
+  uint32_t commandHash = 0;
+  for (int i = 0; i < size && i < 4; i++) {
+    commandHash = (commandHash << 8) | payload[i];
+  }
+  
+  // Get current time for dedupe check
+  unsigned long now = millis();
+  
+  // Check if this is a duplicate command within the time window
+  if (commandHash == lastCommand.commandHash) {
+    unsigned long timeSinceLastCommand = now - lastCommand.lastReceivedTime;
+    if (timeSinceLastCommand < DEDUPE_WINDOW_MS) {
+      Serial.print("Duplicate command received after ");
+      Serial.print(timeSinceLastCommand);
+      Serial.print("ms (window: ");
+      Serial.print(DEDUPE_WINDOW_MS);
+      Serial.println("ms), ignoring");
+      return;
+    }
+    Serial.print("Command matches previous but window expired (");
+    Serial.print(timeSinceLastCommand);
+    Serial.println("ms), processing");
+  }
+  
+  // Update the last command info
+  lastCommand.commandHash = commandHash;
+  lastCommand.lastReceivedTime = now;
   
   // Extract command type
   uint8_t command = payload[0];
@@ -142,36 +191,103 @@ void processDownlinkMessage(uint8_t* payload, uint8_t size) {
     // Duration in seconds (LSB first)
     unsigned long duration = ((unsigned long)payload[3] << 8) | payload[2];
     
-    Serial.print("Toggle for duration command: relays=");
+    Serial.println("----------------------------------------");
+    Serial.println("Processing Toggle Duration Command:");
+    Serial.print("Raw bytes: ");
+    for(int i = 0; i < 4; i++) {
+      Serial.print("0x");
+      Serial.print(payload[i], HEX);
+      Serial.print(" ");
+    }
+    Serial.println();
+    
+    Serial.print("Duration calculation: LSB=0x");
+    Serial.print(payload[2], HEX);
+    Serial.print(", MSB=0x");
+    Serial.print(payload[3], HEX);
+    Serial.print(", Combined=0x");
+    Serial.print(duration, HEX);
+    Serial.print(" (");
+    Serial.print(duration);
+    Serial.println(" seconds)");
+    
+    Serial.print("Toggle for duration command: relays=0x");
+    Serial.print(relayBitmap, HEX);
+    Serial.print(" (binary ");
     Serial.print(relayBitmap, BIN);
-    Serial.print(", duration=");
+    Serial.print("), duration=");
     Serial.print(duration);
     Serial.println(" seconds");
     
     // Process for each relay
     for (uint8_t i = 0; i < NUM_RELAYS; i++) {
       if (relayBitmap & (1 << i)) {
-        // Toggle the relay
-        relays[i]->toggle();
+        // Check if timer is already active for this relay
+        if (relayTimers[i].active) {
+          Serial.print("Timer already active for relay ");
+          Serial.print(i + 1);
+          Serial.println(", ignoring duplicate command");
+          continue;
+        }
+        
+        // Store initial state before changing
+        relayTimers[i].initialState = relays[i]->getState();
+        Serial.print("Initial state of relay ");
+        Serial.print(i + 1);
+        Serial.print(": ");
+        Serial.println(relayTimers[i].initialState ? "ON" : "OFF");
+        
+        // Set to opposite state instead of toggle
+        if (relayTimers[i].initialState) {
+          relays[i]->off();
+        } else {
+          relays[i]->on();
+        }
+        
+        Serial.print("Changed relay ");
+        Serial.print(i + 1);
+        Serial.print(" to: ");
+        Serial.println(relays[i]->getState() ? "ON" : "OFF");
         
         // Set up timer
-        relayTimers[i].startTime = millis();
+        unsigned long now = millis();
         relayTimers[i].duration = duration * 1000; // Convert to milliseconds
+        relayTimers[i].startTime = now;
+        relayTimers[i].lastPrintTime = now;
         relayTimers[i].active = true;
         
-        Serial.print("Relay ");
+        unsigned long endTime = now + relayTimers[i].duration;
+        
+        Serial.println("----------------------------------------");
+        Serial.print("Timer started for relay ");
         Serial.print(i + 1);
-        Serial.print(" toggled to ");
-        Serial.print(relays[i]->getState() ? "ON" : "OFF");
         Serial.print(" for ");
         Serial.print(duration);
         Serial.println(" seconds");
+        Serial.print("Start time: ");
+        Serial.print(now);
+        Serial.print(", End time: ");
+        Serial.print(endTime);
+        Serial.print(" (duration: ");
+        Serial.print(relayTimers[i].duration);
+        Serial.println("ms)");
+        Serial.println("----------------------------------------");
       }
     }
   }
   else {
     Serial.print("Unknown command type: 0x");
     Serial.println(command, HEX);
+  }
+}
+
+void clearDownlinkBuffer() {
+  // Clear the downlink buffer by filling it with zeros
+  memset(downlinkBuffer, 0, sizeof(downlinkBuffer));
+  
+  // Clear any pending downlinks in the LoRaWAN manager
+  while (lorawan.receiveDownlink(downlinkBuffer, nullptr, nullptr)) {
+    Serial.println("Cleared pending downlink");
   }
 }
 
@@ -221,6 +337,7 @@ void loop() {
       
       // Handle TTN's padded downlink format by determining the actual command length
       uint8_t actualSize = 0;
+      bool validCommand = false;
       
       // Extract the command type and determine the expected message length
       if (length > 0) {
@@ -231,11 +348,13 @@ void loop() {
         if ((cmdType == 0x01 || cmdType == 0x02) && length >= 2) {
           // ON/OFF command (Command, Bitmap)
           actualSize = 2;
+          validCommand = true;
           Serial.print("Relay control command. Relay bitmap: 0x");
           Serial.println(downlinkBuffer[1], HEX);
         } else if (cmdType == 0x03 && length >= 4) {
           // Toggle for duration (Command, Bitmap, Duration LSB, Duration MSB)
           actualSize = 4;
+          validCommand = true;
           Serial.println("Toggle for duration command");
         } else {
           // Unknown command or incomplete payload
@@ -248,6 +367,12 @@ void loop() {
         
         // Process only the meaningful part of the downlink payload
         processDownlinkMessage(downlinkBuffer, actualSize);
+        
+        // Clear the downlink buffer after processing a valid command
+        if (validCommand) {
+          Serial.println("Clearing downlink buffer after command processing");
+          clearDownlinkBuffer();
+        }
       }
       Serial.println("==========================================");
     }
@@ -258,16 +383,59 @@ void loop() {
   // Check timers for timed relay operations
   for (uint8_t i = 0; i < NUM_RELAYS; i++) {
     if (relayTimers[i].active) {
-      if (currentTime - relayTimers[i].startTime >= relayTimers[i].duration) {
-        // Timer expired - toggle the relay back
-        relays[i]->toggle();
-        Serial.print("Timer expired: Relay ");
+      // Calculate elapsed time
+      unsigned long now = millis();
+      unsigned long endTime = relayTimers[i].startTime + relayTimers[i].duration;
+      
+      // Check if timer has expired, using direct comparison
+      if (now >= endTime) {
+        // Timer has expired
+        Serial.println("----------------------------------------");
+        Serial.print("Timer expired for relay ");
         Serial.print(i + 1);
-        Serial.print(" toggled back to ");
+        Serial.print(" (end time: ");
+        Serial.print(endTime);
+        Serial.print(", current time: ");
+        Serial.print(now);
+        Serial.println(")");
+        
+        Serial.print("Current state: ");
         Serial.println(relays[i]->getState() ? "ON" : "OFF");
+        Serial.print("Initial state was: ");
+        Serial.println(relayTimers[i].initialState ? "ON" : "OFF");
+        
+        // Return to initial state
+        if (relayTimers[i].initialState) {
+          relays[i]->on();
+        } else {
+          relays[i]->off();
+        }
+        
+        Serial.print("Returned relay ");
+        Serial.print(i + 1);
+        Serial.print(" to initial state: ");
+        Serial.println(relayTimers[i].initialState ? "ON" : "OFF");
+        Serial.println("----------------------------------------");
         
         // Reset timer
         relayTimers[i].active = false;
+      } else {
+        // Print progress every second
+        if (now - relayTimers[i].lastPrintTime >= 1000) {
+          unsigned long remainingTime = (endTime - now) / 1000;
+          Serial.println("----------------------------------------");
+          Serial.print("Relay ");
+          Serial.print(i + 1);
+          Serial.print(" timer: ");
+          Serial.print(remainingTime);
+          Serial.print(" seconds remaining (end time: ");
+          Serial.print(endTime);
+          Serial.print(", current time: ");
+          Serial.print(now);
+          Serial.println(")");
+          Serial.println("----------------------------------------");
+          relayTimers[i].lastPrintTime = now;
+        }
       }
     }
   }
